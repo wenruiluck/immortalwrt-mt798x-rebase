@@ -50,6 +50,10 @@ jobs:
           sudo -E apt-get clean
           sudo timedatectl set-timezone "$TZ"
 
+      - name: Add 3rd-party Packages
+        run: |
+          git clone --depth=1 https://github.com/QiuSimons/luci-app-daed.git package/luci-app-daed
+
       - name: Update & Install Feeds
         run: |
           ./scripts/feeds update -a
