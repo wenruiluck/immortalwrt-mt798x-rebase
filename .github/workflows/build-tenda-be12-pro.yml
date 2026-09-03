@@ -1,0 +1,120 @@
+name: Build Tenda BE12 Pro Firmware
+
+on:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: 'Upload to GitHub Release'
+        required: false
+        default: 'true'
+        type: boolean
+  push:
+    paths:
+      - 'defconfig/minimal.config'
+      - 'defconfig/mt7987-tenda-be12-pro.config'
+      - '.github/workflows/build-tenda-be12-pro.yml'
+      - 'target/linux/mediatek/dts/mt7987a-tenda-be12-pro.dts'
+
+env:
+  TZ: Asia/Shanghai
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout Source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Free Disk Space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+
+      - name: Initialize Build Environment
+        run: |
+          sudo -E apt-get update
+          sudo -E apt-get -y install build-essential clang flex bison g++ gawk gcc-multilib g++-multilib \
+            gettext git libncurses-dev libssl-dev python3-distutils rsync unzip zlib1g-dev \
+            file wget subversion swig time libelf-dev libfuse-dev
+          sudo -E apt-get clean
+          sudo timedatectl set-timezone "$TZ"
+
+      - name: Update & Install Feeds
+        run: |
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: Load Defconfig
+        run: |
+          if [ -f "defconfig/minimal.config" ]; then
+            cp -f defconfig/minimal.config .config
+          else
+            cp -f defconfig/mt7987-tenda-be12-pro.config .config
+          fi
+          make defconfig
+
+      - name: Download DL Packages
+        run: |
+          make download -j8
+          find dl -size -1024c -exec ls -l {} \;
+          find dl -size -1024c -exec rm -f {} \;
+
+      - name: Compile Firmware
+        run: |
+          echo -e "$(nproc) thread compile"
+          make -j$(nproc) || make -j1 V=s
+          echo "STATUS=success" >> $GITHUB_ENV
+
+      - name: Organize Files
+        if: env.STATUS == 'success'
+        run: |
+          mkdir -p release_firmware
+          cp -f .config release_firmware/tenda-be12-pro.config
+          find bin/targets/mediatek/filogic/ -type f -name "*tenda_be12-pro*" -exec cp -f {} release_firmware/ \;
+          cd release_firmware
+          sha256sum * > sha256sums.txt
+          echo "BUILD_DATE=$(date +'%Y.%m.%d-%H%M')" >> $GITHUB_ENV
+          echo "RELEASE_TAG=Tenda-BE12-Pro-$(date +'%Y.%m.%d-%H%M')" >> $GITHUB_ENV
+
+      - name: Upload Artifacts
+        if: env.STATUS == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ImmortalWrt-Tenda-BE12-Pro-${{ env.BUILD_DATE }}
+          path: release_firmware/
+          retention-days: 30
+
+      - name: Create GitHub Release
+        if: env.STATUS == 'success' && (github.event.inputs.release == 'true' || github.event_name == 'push')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: "ImmortalWrt for Tenda BE12 Pro (${{ env.BUILD_DATE }})"
+          body: |
+            ### 腾达 (Tenda) BE12 Pro (MT7987A / Filogic 860) 固件
+
+            - **构建时间**: ${{ env.BUILD_DATE }}
+            - **内核特性**: TCP BBR、eBPF (daed 依赖支持)、FullCone NAT1
+            - **集成插件**:
+              - 🚀 **Turbo ACC MTK** (硬件加速 + FullCone NAT1)
+              - 🛡️ **daed** (eBPF 代理核心 + LuCI 前端 + GeoData 规则库)
+              - 🔒 **WireGuard** (内核模块 + LuCI 前端)
+              - ⚡ **SmartDNS** (SmartDNS + LuCI 前端)
+              - 🎨 **Argon 主题** & 简体中文 LuCI
+            
+            #### 固件文件说明：
+            - `*initramfs-kernel.bin`: TFTP / 救砖 / 过渡固件
+            - `*squashfs-sysupgrade.bin`: 官方/第三方系统升级用固件
+          files: release_firmware/*
+
